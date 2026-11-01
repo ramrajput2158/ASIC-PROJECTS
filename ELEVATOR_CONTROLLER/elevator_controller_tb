@@ -1,0 +1,154 @@
+// Code your testbench here
+// or browse Examples
+module elevator_controller_tb;
+
+    logic clk = 0;
+    logic rst = 1;
+    logic [3:0] floor_req = 0;
+    logic door_time_done = 0;
+
+    logic [1:0] current_floor;
+    logic motor_up, motor_down, door_open;
+    logic [2:0] state;
+
+    localparam logic [2:0] IDLE = 3'd0;
+    localparam logic [2:0] MOVE_UP = 3'd1;
+    localparam logic [2:0] MOVE_DOWN = 3'd2;
+    localparam logic [2:0] DOOR_OPEN = 3'd3;
+    localparam logic [2:0] DOOR_CLOSE = 3'd4;
+
+    elevator_controller dut (
+        .clk(clk),
+        .rst(rst),
+        .floor_req(floor_req),
+        .door_time_done(door_time_done),
+        .current_floor(current_floor),
+        .motor_up(motor_up),
+        .motor_down(motor_down),
+        .door_open(door_open),
+        .state(state)
+    );
+    // 10 ns clock period
+    always #5 clk = ~clk;
+
+    // Wait for a positive edge and NBA updates
+    task automatic tick;
+        @(posedge clk);
+        #1;
+    endtask
+    // Apply a one-cycle floor request
+    task automatic request_floor(input logic [3:0] req);
+        @(negedge clk);
+        floor_req = req;
+        tick();
+        @(negedge clk);
+        floor_req = 4'b0000;
+    endtask
+    // Wait until the requested floor's door opens
+    task automatic wait_for_floor(input logic [1:0] target);
+        int cycles;
+        cycles = 0;
+        while (!(door_open === 1'b1 &&
+                 current_floor === target) &&
+               cycles < 100) begin
+            tick();
+            cycles++;
+        end
+        if (!(door_open === 1'b1 &&
+              current_floor === target))
+            $fatal(1,
+                "FAIL: Floor index %0d not reached; current=%0d state=%0d",
+                target, current_floor, state);
+
+        $display("[%0t] Door open at floor index %0d",
+                 $time, current_floor);
+    endtask
+    // Pulse the door timer and wait for the door sequence to finish
+    task automatic finish_door;
+        int cycles;
+        if (door_open !== 1'b1)
+            $fatal(1, "FAIL: finish_door called when door is not open");
+        @(negedge clk);
+        door_time_done = 1'b1;
+        tick();
+        @(negedge clk);
+        door_time_done = 1'b0;
+        cycles = 0;
+        while (state == DOOR_CLOSE && cycles < 100) begin
+            tick();
+            cycles++;
+        end
+        if (state == DOOR_CLOSE)
+            $fatal(1, "FAIL: Door closing sequence timed out");
+    endtask
+    initial begin
+        $dumpfile("elevator.vcd");
+        $dumpvars(0, elevator_controller_tb);
+        $display("================================");
+        $display(" Elevator Controller Test Start");
+        $display("================================");
+        // TEST 1: Reset
+        rst = 1'b1;
+        floor_req = 4'b0000;
+        door_time_done = 1'b0;
+        #2;
+        rst = 1'b0;
+        repeat (2) tick();
+        if (state !== IDLE ||
+            current_floor !== 2'd0 ||
+            motor_up !== 1'b0 ||
+            motor_down !== 1'b0 ||
+            door_open !== 1'b0)
+            $fatal(1, "TEST 1 FAILED: Reset");
+        $display("TEST 1 PASSED: Reset");
+        @(negedge clk);
+        rst = 1'b1;
+        tick();
+        // TEST 2: Request current floor (index 0)
+        request_floor(4'b0001);
+        wait_for_floor(2'd0);
+        finish_door();
+        $display("TEST 2 PASSED: Same-floor request");
+        // TEST 3: Request floor index 2
+        request_floor(4'b0100);
+        wait_for_floor(2'd2);
+        finish_door();
+        if (current_floor !== 2'd2)
+            $fatal(1, "TEST 3 FAILED: Upward request");
+        $display("TEST 3 PASSED: Upward request");
+        // TEST 4: Return to floor index 0
+        request_floor(4'b0001);
+        wait_for_floor(2'd0);
+        finish_door();
+        if (current_floor !== 2'd0)
+            $fatal(1, "TEST 4 FAILED: Downward request");
+        $display("TEST 4 PASSED: Downward request");
+
+        // TEST 5: Simultaneous requests for indices 1 and 3
+        request_floor(4'b1010);
+        wait_for_floor(2'd1);
+        finish_door();
+        wait_for_floor(2'd3);
+        finish_door();
+        if (current_floor !== 2'd3)
+            $fatal(1, "TEST 5 FAILED: Multiple requests");
+        $display("TEST 5 PASSED: Multiple requests");
+        // TEST 6: Idle outputs after serving all requests
+        if (state !== IDLE ||
+            motor_up !== 1'b0 ||
+            motor_down !== 1'b0 ||
+            door_open !== 1'b0)
+            $fatal(1, "TEST 6 FAILED: Idle outputs");
+        $display("TEST 6 PASSED: Idle outputs");
+        $display("================================");
+        $display(" ALL TESTS COMPLETED");
+        $display("================================");
+        $finish;
+    end
+    // Global timeout
+    initial begin
+        #5000;
+        $fatal(1, "GLOBAL TIMEOUT: Controller may be stuck");
+    end
+endmodule
+
